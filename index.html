@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>ShopBrain Scanner</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'system-ui', 'sans-serif'],
+            },
+            colors: {
+              'dark-bg': '#000000',
+              'dark-card': '#111111',
+              'dark-border': '#333333',
+              'secondary-text': '#888888',
+              'accent-1': '#fafafa',
+              'accent-2': '#eaeaea',
+            },
+            keyframes: {
+                'fade-in': {
+                    '0%': { opacity: '0' },
+                    '100%': { opacity: '1' },
+                },
+                'pop-in': {
+                    '0%': { opacity: '0', transform: 'scale(0.5)' },
+                    '100%': { opacity: '1', transform: 'scale(1)' },
+                },
+                'draw-check': {
+                    '0%': { 'stroke-dashoffset': 100 },
+                    '100%': { 'stroke-dashoffset': 0 },
+                },
+            },
+            animation: {
+                'fade-in': 'fade-in 0.5s ease-in-out',
+                'pop-in': 'pop-in 0.3s ease-out',
+                'draw-check': 'draw-check 0.5s ease-out forwards',
+            },
+          },
+        },
+      }
+    </script>
+    
+    <!-- Barcode Scanner Library -->
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+    
+    <!-- Firebase SDKs -->
+    <script type="importmap">
+      {
+        "imports": {
+          "firebase/app": "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js",
+          "firebase/firestore": "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js"
+        }
+      }
+    </script>
+
+    <style>
+        body, html {
+            overscroll-behavior: none;
+        }
+        #video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        #viewfinder {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 80%;
+            height: 30%;
+            transform: translate(-50%, -50%);
+            border: 2px solid rgba(255, 255, 255, 0.7);
+            border-radius: 16px;
+            box-shadow: 0 0 0 4000px rgba(0, 0, 0, 0.5);
+        }
+        .success-check {
+            stroke-dasharray: 100;
+            stroke-dashoffset: 100;
+            animation: draw-check 0.5s ease-out forwards;
+        }
+    </style>
+</head>
+
+<body class="bg-dark-bg font-sans text-accent-1 h-screen overflow-hidden">
+
+    <!-- Setup Screen -->
+    <div id="setup-screen" class="flex flex-col items-center justify-center h-full p-6 animate-fade-in">
+        <h1 class="text-3xl font-bold mb-2">ShopBrain Scanner</h1>
+        <p class="text-secondary-text mb-8">Enter details to begin</p>
+        <div class="w-full max-w-sm space-y-4">
+            <input id="cashier-name" type="text" placeholder="Cashier Name (e.g., Thabo)" class="w-full p-3 rounded-lg bg-dark-card border border-dark-border focus:outline-none focus:ring-2 focus:ring-white/50">
+            <input id="device-id" type="text" placeholder="Device ID (e.g., cashier-1)" class="w-full p-3 rounded-lg bg-dark-card border border-dark-border focus:outline-none focus:ring-2 focus:ring-white/50">
+            <button id="start-btn" class="w-full p-3 rounded-lg bg-accent-1 text-black font-bold text-lg hover:bg-accent-2 transition-colors">Start Scanning</button>
+        </div>
+    </div>
+
+    <!-- Scanner Screen -->
+    <div id="scanner-screen" class="hidden relative h-full w-full">
+        <video id="video" playsinline></video>
+        <div id="viewfinder"></div>
+        <canvas id="canvas" class="hidden"></canvas>
+        
+        <div class="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black to-transparent">
+            <p id="status-text" class="text-center text-lg font-medium">Point camera at a barcode</p>
+            <button id="logout-btn" class="absolute top-4 right-4 bg-dark-card/70 text-accent-1 px-3 py-1 rounded-md text-sm">Log Out</button>
+        </div>
+    </div>
+
+    <!-- Result Overlay -->
+    <div id="result-overlay" class="hidden fixed inset-0 z-50 flex items-center justify-center animate-pop-in">
+        <div id="result-content" class="text-center p-8 rounded-2xl w-11/12 max-w-sm">
+            <!-- Content injected by JS -->
+        </div>
+    </div>
+
+<script type="module">
+    // --- PASTE YOUR FIREBASE CONFIG HERE ---
+    const firebaseConfig = {
+  apiKey: "AIzaSyAyIZ5zZu0PkZC1hi4TeECf1h5-S_kgJVM",
+  authDomain: "shopbrain-live.firebaseapp.com",
+  projectId: "shopbrain-live",
+  storageBucket: "shopbrain-live.firebasestorage.app",
+  messagingSenderId: "39171705053",
+  appId: "1:39171705053:web:af98ba8f1de6558c9cb334"
+};
+    // ------------------------------------
+
+    import { initializeApp } from "firebase/app";
+    import { getFirestore, collection, query, where, getDocs, addDoc, serverTimestamp } from "firebase/firestore";
+
+    // Firebase Initialization
+    let db;
+    try {
+        const app = initializeApp(firebaseConfig);
+        db = getFirestore(app);
+        console.log("Firebase Initialized");
+    } catch (e) {
+        console.error("Firebase initialization failed. Please paste your config.", e);
+        alert("Firebase is not configured. Please check the console.");
+    }
+    
+    // DOM Elements
+    const setupScreen = document.getElementById('setup-screen');
+    const scannerScreen = document.getElementById('scanner-screen');
+    const startBtn = document.getElementById('start-btn');
+    const cashierNameInput = document.getElementById('cashier-name');
+    const deviceIdInput = document.getElementById('device-id');
+    const logoutBtn = document.getElementById('logout-btn');
+
+    const video = document.getElementById('video');
+    const canvasEl = document.getElementById('canvas');
+    const canvas = canvasEl.getContext('2d', { willReadFrequently: true });
+    const statusText = document.getElementById('status-text');
+
+    const resultOverlay = document.getElementById('result-overlay');
+    const resultContent = document.getElementById('result-content');
+
+    let scanning = false;
+    let animationFrameId;
+
+    // Functions
+    function showScreen(screen) {
+        setupScreen.classList.add('hidden');
+        scannerScreen.classList.add('hidden');
+        screen.classList.remove('hidden');
+    }
+
+    function startScanner() {
+        if (scanning) return;
+        scanning = true;
+        statusText.textContent = 'Starting camera...';
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+            .then(function(stream) {
+                video.srcObject = stream;
+                video.setAttribute("playsinline", true); // required for iOS
+                video.play();
+                statusText.textContent = 'Point camera at a barcode';
+                animationFrameId = requestAnimationFrame(tick);
+            })
+            .catch(err => {
+                console.error("Camera Error:", err);
+                statusText.textContent = 'Camera access denied';
+                scanning = false;
+            });
+    }
+
+    function stopScanner() {
+        if (!scanning) return;
+        cancelAnimationFrame(animationFrameId);
+        if (video.srcObject) {
+            video.srcObject.getTracks().forEach(track => track.stop());
+        }
+        scanning = false;
+    }
+
+    function tick() {
+        if (video.readyState === video.HAVE_ENOUGH_DATA) {
+            canvasEl.height = video.videoHeight;
+            canvasEl.width = video.videoWidth;
+            canvas.drawImage(video, 0, 0, canvasEl.width, canvasEl.height);
+            const imageData = canvas.getImageData(0, 0, canvasEl.width, canvasEl.height);
+            const code = jsQR(imageData.data, imageData.width, imageData.height, {
+                inversionAttempts: "dontInvert",
+            });
+
+            if (code) {
+                handleScan(code.data);
+                return; // Stop ticking once a code is found
+            }
+        }
+        animationFrameId = requestAnimationFrame(tick);
+    }
+    
+    async function handleScan(barcode) {
+        if (!scanning) return; // Prevent multiple scans
+        stopScanner();
+        statusText.textContent = `Processing barcode: ${barcode}`;
+        
+        try {
+            const productsRef = collection(db, "products");
+            const q = query(productsRef, where("barcode", "==", barcode));
+            const querySnapshot = await getDocs(q);
+
+            if (querySnapshot.empty) {
+                showResult(false, "Product not found", `Barcode ${barcode} is not in the database.`);
+            } else {
+                const productDoc = querySnapshot.docs[0].data();
+                
+                const scanData = {
+                    barcode: barcode,
+                    productName: productDoc.name,
+                    price: productDoc.price,
+                    timestamp: serverTimestamp(),
+                    cashier: localStorage.getItem('cashierName'),
+                    device: localStorage.getItem('deviceId')
+                };
+
+                await addDoc(collection(db, "scans"), scanData);
+                showResult(true, productDoc.name, `R ${productDoc.price.toFixed(2)}`);
+            }
+        } catch (error) {
+            console.error("Error processing scan:", error);
+            showResult(false, "Database Error", "Could not log scan. Check connection.");
+        }
+    }
+
+    function showResult(isSuccess, title, subtitle) {
+        resultOverlay.classList.remove('hidden');
+        resultContent.className = `text-center p-8 rounded-2xl w-11/12 max-w-sm ${isSuccess ? 'bg-green-600' : 'bg-red-600'}`;
+        
+        const icon = isSuccess 
+            ? `<svg class="w-24 h-24 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path class="success-check" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>`
+            : `<svg class="w-24 h-24 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>`;
+
+        resultContent.innerHTML = `
+            ${icon}
+            <h2 class="text-3xl font-bold mt-4">${title}</h2>
+            <p class="text-lg opacity-80">${subtitle}</p>
+        `;
+
+        setTimeout(() => {
+            resultOverlay.classList.add('hidden');
+            startScanner();
+        }, isSuccess ? 1500 : 2500);
+    }
+
+    // Event Listeners
+    startBtn.addEventListener('click', () => {
+        const cashierName = cashierNameInput.value.trim();
+        const deviceId = deviceIdInput.value.trim();
+        if (cashierName && deviceId) {
+            localStorage.setItem('cashierName', cashierName);
+            localStorage.setItem('deviceId', deviceId);
+            showScreen(scannerScreen);
+            startScanner();
+        } else {
+            alert('Please fill in both fields.');
+        }
+    });
+
+    logoutBtn.addEventListener('click', () => {
+        localStorage.removeItem('cashierName');
+        localStorage.removeItem('deviceId');
+        stopScanner();
+        cashierNameInput.value = '';
+        deviceIdInput.value = '';
+        showScreen(setupScreen);
+    });
+
+    // Initial Load
+    (function init() {
+        const cashierName = localStorage.getItem('cashierName');
+        const deviceId = localStorage.getItem('deviceId');
+        if (cashierName && deviceId) {
+            showScreen(scannerScreen);
+            startScanner();
+        } else {
+            showScreen(setupScreen);
+        }
+    })();
+</script>
+
+</body>
+</html>
